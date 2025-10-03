@@ -1,0 +1,109 @@
+---
+title: "Why Quarto?"
+format: gfm
+color:
+  palette:
+    dark-grey: "#222222"
+    blue: "#ddeaf1"
+  background: dark-grey
+  foreground: blue
+  primary: white
+---
+
+Why not.
+
+```{r}
+#| label: load-packages and functions
+#| include: false
+library(shiny)
+library(bslib)
+library(ggplot2)
+library(dplyr)
+
+# ASCII sugar skull with flowers data - courtesy of Posit's Shiny Assistant
+create_sugar_skull_data <- function() {
+  skull_lines <- c(
+    "    🌸       🌺       🌸",
+    "  🌺   .-~*~*~*~-.   🌺",
+    "      /  ♦ ♦ ♦ ♦  \\",
+    " 🌸  | ♦ @ ♦ ♦ @ ♦ |  🌸",
+    "     | ♦ ♦ ♦^♦ ♦ ♦ |",
+    " 🌺  | * ♦ ♦♦♦ ♦ * |  🌺",
+    "     | ♦   ♦♦♦   ♦ |",
+    " 🌸  | * ♦ |♦♦| ♦ * |  🌸",
+    "     | ♦ * \\___/ * ♦|",
+    " 🌺   \\ ♦*~*~*~*♦ /   🌺",
+    "       '-*~♦~♦~*-'",
+    "    🌸   🌺   🌺   🌸"
+  )
+  
+  # Convert to data frame with x, y coordinates and characters
+  skull_data <- data.frame()
+  
+  for (y in seq_along(skull_lines)) {
+    line <- skull_lines[y]
+    chars <- strsplit(line, "")[[1]]
+    
+    for (x in seq_along(chars)) {
+      if (chars[x] != " ") {  # Only include non-space characters
+        # Classify characters by type for coloring
+        char_type <- case_when(
+          chars[x] %in% c("@") ~ "eyes",
+          chars[x] %in% c("♦") ~ "diamonds",
+          chars[x] %in% c("*") ~ "stars",
+          chars[x] %in% c("^") ~ "nose",
+          chars[x] %in% c("|", "\\", "/", "_") ~ "mouth",
+          chars[x] %in% c("~") ~ "decoration",
+          chars[x] %in% c("🌸", "🌺") ~ "flowers",
+          TRUE ~ "outline"
+        )
+        
+        skull_data <- rbind(skull_data, data.frame(
+          x = x,
+          y = length(skull_lines) - y + 1,  # Flip y-axis
+          char = chars[x],
+          type = char_type
+        ))
+      }
+    }
+  }
+  
+  return(skull_data)
+}
+
+```
+
+## Melodía Ancestral
+
+I asked Posit's [**Shiny Assistant**](https://gallery.shinyapps.io/assistant) to make some AASCI art in [`{ggplot2}`](https://ggplot2.tidyverse.org/) and a [Sugar Skull designer app](https://amelialouise.shinyapps.io/everybody-git-together/). 
+
+@fig-skull shows the magnificent Melodía Ancestral, which Shiny also named. Neat.
+
+```{r}
+#| label: fig-skull
+#| fig-cap: Shiny Assistant's ASCII sugar skull art
+#| warning: false
+#| echo: false
+data <- create_sugar_skull_data()
+    
+    ggplot(data, aes(x = x, y = y, label = char, color = type)) +
+      geom_text(size = 5, family = "mono") +
+      scale_color_manual(values = c(
+        "eyes" = "#FF1493",      # Deep pink for eyes
+        "diamonds" = "#00CED1",  # Dark turquoise for diamonds
+        "stars" = "#FFD700",     # Gold for stars
+        "nose" = "#FF4500",      # Orange red for nose
+        "mouth" = "#8A2BE2",     # Blue violet for mouth
+        "decoration" = "#32CD32", # Lime green for decorations
+        "flowers" = "#FF69B4",   # Hot pink for flowers
+        "outline" = "#DC143C"    # Crimson for outline
+      )) +
+      theme_void() +
+      theme(
+        plot.background = element_rect(fill = "black", color = "black"),
+        panel.background = element_rect(fill = "black", color = "black"),
+        strip.background = element_rect(fill = "black"),
+        legend.position = "none"
+      ) 
+
+```
