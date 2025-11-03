@@ -1,186 +1,242 @@
 library(shiny)
 library(bslib)
+library(dplyr)
 library(ggplot2)
+library(plotly)
+library(purrr)
+library(DT)
 
-# Define UI
+# Generate synthetic data
+set.seed(123)
+generate_data <- function() {
+  insurers <- paste0("Insurer_", LETTERS[1:50])
+  years <- 2020:2024
+
+  data <- expand.grid(insurer = insurers, year = years) %>%
+    mutate(
+      # Generate premium written with some variation by year and insurer
+      base_premium = runif(n(), 2, 13.6),
+      year_factor = case_when(
+        year == 2020 ~ 0.85,
+        year == 2021 ~ 0.92,
+        year == 2022 ~ 1.0,
+        year == 2023 ~ 1.05,
+        year == 2024 ~ 1.1
+      ),
+      premium_written = base_premium * year_factor * runif(n(), 0.8, 1.2),
+
+      # Generate LCM with some correlation to insurer size (larger insurers tend to have lower LCM)
+      size_factor = (premium_written - min(premium_written)) /
+        (max(premium_written) - min(premium_written)),
+      lcm = 0.75 + (1.25 * (1 - size_factor * 0.6)) + rnorm(n(), 0, 0.15),
+      lcm = pmax(0.75, pmin(2.0, lcm)) # Bound between 0.75 and 2.0
+    ) %>%
+    select(insurer, year, premium_written, lcm) %>%
+    arrange(year, desc(premium_written))
+
+  return(data)
+}
+
+# Generate the data
+insurance_data <- generate_data()
+
 ui <- page_sidebar(
-  title = "Sugar Skull Designer",
+  title = "Loss Cost Multiplier Sensitivity Analysis",
   sidebar = sidebar(
-    h4("Customize Your Sugar Skull"),
-    selectInput("skull_color", "Skull Base Color:",
-                choices = c("White" = "white", "Cream" = "ivory", "Light Pink" = "lightpink", 
-                           "Light Blue" = "lightblue", "Light Yellow" = "lightyellow"),
-                selected = "white"),
-    
-    selectInput("eye_color", "Eye Socket Color:",
-                choices = c("Black" = "black", "Dark Blue" = "darkblue", "Purple" = "purple", 
-                           "Dark Green" = "darkgreen", "Maroon" = "maroon"),
-                selected = "black"),
-    
-    selectInput("flower_color", "Flower Color:",
-                choices = c("Red" = "red", "Pink" = "hotpink", "Orange" = "orange", 
-                           "Yellow" = "gold", "Purple" = "mediumorchid", "Blue" = "dodgerblue"),
-                selected = "red"),
-    
-    selectInput("pattern_color", "Pattern Color:",
-                choices = c("Black" = "black", "Dark Blue" = "darkblue", "Purple" = "purple", 
-                           "Dark Green" = "darkgreen", "Red" = "red", "Gold" = "gold"),
-                selected = "black"),
-    
-    sliderInput("pattern_size", "Pattern Size:",
-                min = 0.5, max = 2, value = 1, step = 0.1),
-    
-    checkboxInput("show_flowers", "Show Flowers", value = TRUE),
-    checkboxInput("show_patterns", "Show Decorative Patterns", value = TRUE),
-    
-    actionButton("randomize", "Randomize Colors", class = "btn-primary")
+    width = 350,
+    h4("Analysis Controls"),
+
+    selectInput(
+      "selected_year",
+      "Select Year:",
+      choices = 2020:2024,
+      selected = 2024
+    ),
+
+    sliderInput(
+      "top_n",
+      "Number of Top Insurers (by Premium):",
+      min = 5,
+      max = 50,
+      value = 30,
+      step = 1
+    ),
+
+    hr(),
+
+    h5("Current Analysis Summary:"),
+    verbatimTextOutput("summary_stats")
   ),
-  
-  card(
-    card_header("Your Sugar Skull"),
-    plotOutput("skull_plot", height = "600px")
+
+  layout_columns(
+    card(
+      card_header("Weighted Average LCM by Number of Insurers"),
+      plotlyOutput("sensitivity_plot", height = "400px")
+    ),
+
+    card(
+      card_header("Premium Distribution"),
+      plotlyOutput("premium_plot", height = "400px")
+    ),
+
+    col_widths = c(6, 6)
+  ),
+
+  layout_columns(
+    card(
+      card_header("Insurers Included in Calculation"),
+      DTOutput("insurers_table")
+    ),
+
+    col_widths = 12
   )
 )
 
-# Define server logic
 server <- function(input, output, session) {
-  
-  # Reactive values for colors (to support randomization)
-  skull_colors <- reactiveValues(
-    skull = "white",
-    eye = "black", 
-    flower = "red",
-    pattern = "black"
-  )
-  
-  # Update reactive values when inputs change
-  observe({
-    skull_colors$skull <- input$skull_color
-    skull_colors$eye <- input$eye_color
-    skull_colors$flower <- input$flower_color
-    skull_colors$pattern <- input$pattern_color
+  # Reactive data for selected year
+  year_data <- reactive({
+    insurance_data %>%
+      filter(year == input$selected_year) %>%
+      arrange(desc(premium_written))
   })
-  
-  # Randomize colors
-  observeEvent(input$randomize, {
-    colors <- c("red", "blue", "green", "purple", "orange", "pink", "yellow", "cyan", "magenta")
-    dark_colors <- c("black", "darkblue", "darkgreen", "purple", "maroon", "darkred")
-    light_colors <- c("white", "ivory", "lightpink", "lightblue", "lightyellow", "lavender")
-    
-    updateSelectInput(session, "skull_color", selected = sample(light_colors, 1))
-    updateSelectInput(session, "eye_color", selected = sample(dark_colors, 1))
-    updateSelectInput(session, "flower_color", selected = sample(colors, 1))
-    updateSelectInput(session, "pattern_color", selected = sample(dark_colors, 1))
+
+  # Calculate weighted average for different numbers of top insurers
+  sensitivity_data <- reactive({
+    data <- year_data()
+
+    results <- map_dfr(5:50, function(n) {
+      top_n_data <- data %>% slice_head(n = n)
+
+      weighted_avg <- sum(top_n_data$lcm * top_n_data$premium_written) /
+        sum(top_n_data$premium_written)
+
+      total_premium <- sum(top_n_data$premium_written)
+
+      tibble(
+        n_insurers = n,
+        weighted_lcm = weighted_avg,
+        total_premium = total_premium,
+        premium_coverage = total_premium / sum(data$premium_written) * 100
+      )
+    })
+
+    return(results)
   })
-  
-  output$skull_plot <- renderPlot({
-    # Create the sugar skull plot
-    p <- ggplot() + 
-      theme_void() +
-      theme(
-        plot.background = element_rect(fill = "white", color = NA),
-        panel.background = element_rect(fill = "white", color = NA)
+
+  # Current calculation based on slider input
+  current_calculation <- reactive({
+    data <- year_data() %>% slice_head(n = input$top_n)
+
+    weighted_avg <- sum(data$lcm * data$premium_written) /
+      sum(data$premium_written)
+    total_premium <- sum(data$premium_written)
+
+    list(
+      weighted_lcm = weighted_avg,
+      total_premium = total_premium,
+      n_insurers = input$top_n,
+      data = data
+    )
+  })
+
+  # Summary stats output
+  output$summary_stats <- renderText({
+    calc <- current_calculation()
+    paste0(
+      "Weighted Avg LCM: ",
+      round(calc$weighted_lcm, 3),
+      "\n",
+      "Total Premium: $",
+      round(calc$total_premium, 1),
+      "M\n",
+      "Number of Insurers: ",
+      calc$n_insurers,
+      "\n",
+      "Premium Coverage: ",
+      round(calc$total_premium / sum(year_data()$premium_written) * 100, 1),
+      "%"
+    )
+  })
+
+  # Sensitivity plot
+  output$sensitivity_plot <- renderPlotly({
+    sens_data <- sensitivity_data()
+    current <- current_calculation()
+
+    p <- ggplot(sens_data, aes(x = n_insurers, y = weighted_lcm)) +
+      geom_line(color = "steelblue", size = 1) +
+      geom_point(color = "steelblue", size = 2) +
+      geom_point(
+        data = data.frame(x = current$n_insurers, y = current$weighted_lcm),
+        aes(x = x, y = y),
+        color = "red",
+        size = 4
       ) +
-      coord_fixed(ratio = 1) +
-      xlim(-10, 10) +
-      ylim(-12, 8)
-    
-    # Skull base (main shape)
-    skull_x <- c(-6, -6, -5, -3, 3, 5, 6, 6, 5, 3, 2, 1, -1, -2, -3, -5)
-    skull_y <- c(-2, 4, 6, 7, 7, 6, 4, -2, -4, -6, -8, -10, -10, -8, -6, -4)
-    
-    p <- p + geom_polygon(aes(x = skull_x, y = skull_y), 
-                         fill = skull_colors$skull, 
-                         color = skull_colors$pattern, 
-                         linewidth = 1.5)
-    
-    # Eye sockets
-    p <- p + 
-      geom_point(aes(x = -2.5, y = 2), size = 25, color = skull_colors$eye, shape = 16) +
-      geom_point(aes(x = 2.5, y = 2), size = 25, color = skull_colors$eye, shape = 16)
-    
-    # Eye centers (decorative dots)
-    p <- p +
-      geom_point(aes(x = -2.5, y = 2), size = 8, color = skull_colors$flower, shape = 16) +
-      geom_point(aes(x = 2.5, y = 2), size = 8, color = skull_colors$flower, shape = 16)
-    
-    # Nasal cavity (heart shape)
-    nose_x <- c(0, -0.8, -0.5, 0, 0.5, 0.8, 0)
-    nose_y <- c(-1, 0.2, 1, 0.5, 1, 0.2, -1)
-    p <- p + geom_polygon(aes(x = nose_x, y = nose_y), 
-                         fill = skull_colors$eye, 
-                         color = skull_colors$pattern)
-    
-    # Mouth (stitched smile)
-    mouth_x <- seq(-3, 3, length.out = 20)
-    mouth_y <- -4 + 0.3 * sin(mouth_x)
-    p <- p + geom_line(aes(x = mouth_x, y = mouth_y), 
-                      color = skull_colors$pattern, 
-                      linewidth = 2 * input$pattern_size)
-    
-    # Mouth stitches
-    for(i in seq(-2.5, 2.5, by = 1)) {
-      p <- p + geom_segment(aes(x = i, y = -4 + 0.3 * sin(i) - 0.3, 
-                               xend = i, yend = -4 + 0.3 * sin(i) + 0.3),
-                           color = skull_colors$pattern, 
-                           linewidth = 1 * input$pattern_size)
-    }
-    
-    # Add decorative patterns if enabled
-    if(input$show_patterns) {
-      # Forehead pattern (swirls)
-      t <- seq(0, 4*pi, length.out = 100)
-      spiral_x <- 0 + 1.5 * cos(t) * exp(-t/10)
-      spiral_y <- 4.5 + 1.5 * sin(t) * exp(-t/10)
-      p <- p + geom_path(aes(x = spiral_x, y = spiral_y), 
-                        color = skull_colors$pattern, 
-                        linewidth = 2 * input$pattern_size)
-      
-      # Side decorations (dots and lines)
-      for(i in 1:5) {
-        p <- p + 
-          geom_point(aes(x = -4.5, y = 1 - i*0.8), 
-                    size = 3 * input$pattern_size, 
-                    color = skull_colors$pattern) +
-          geom_point(aes(x = 4.5, y = 1 - i*0.8), 
-                    size = 3 * input$pattern_size, 
-                    color = skull_colors$pattern)
-      }
-    }
-    
-    # Add flowers if enabled
-    if(input$show_flowers) {
-      # Left flower
-      flower_angles <- seq(0, 2*pi, length.out = 6)
-      left_flower_x <- -4 + 0.8 * cos(flower_angles)
-      left_flower_y <- 5 + 0.8 * sin(flower_angles)
-      
-      for(i in 1:5) {
-        p <- p + geom_point(aes(x = left_flower_x[i], y = left_flower_y[i]), 
-                           size = 8, color = skull_colors$flower, shape = 16)
-      }
-      p <- p + geom_point(aes(x = -4, y = 5), size = 6, color = "yellow", shape = 16)
-      
-      # Right flower
-      right_flower_x <- 4 + 0.8 * cos(flower_angles)
-      right_flower_y <- 5 + 0.8 * sin(flower_angles)
-      
-      for(i in 1:5) {
-        p <- p + geom_point(aes(x = right_flower_x[i], y = right_flower_y[i]), 
-                           size = 8, color = skull_colors$flower, shape = 16)
-      }
-      p <- p + geom_point(aes(x = 4, y = 5), size = 6, color = "yellow", shape = 16)
-    }
-    
-    # Add some sparkle points around the skull
-    sparkle_x <- c(-7, -6, -8, 7, 6, 8, 0, -1, 1)
-    sparkle_y <- c(3, 1, -1, 3, 1, -1, 7, 6.5, 6.5)
-    p <- p + geom_point(aes(x = sparkle_x, y = sparkle_y), 
-                       size = 4, color = skull_colors$flower, shape = 8)
-    
-    print(p)
+      labs(
+        title = paste("Sensitivity Analysis for", input$selected_year),
+        x = "Number of Top Insurers Included",
+        y = "Weighted Average LCM"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 12))
+
+    ggplotly(p, tooltip = c("x", "y"))
+  })
+
+  # Premium distribution plot
+  output$premium_plot <- renderPlotly({
+    data <- year_data() %>%
+      slice_head(n = input$top_n) %>%
+      mutate(rank = row_number())
+
+    p <- ggplot(data, aes(x = rank, y = premium_written, fill = lcm)) +
+      geom_col() +
+      scale_fill_gradient2(
+        low = "green",
+        mid = "yellow",
+        high = "red",
+        midpoint = 1.375,
+        name = "LCM"
+      ) +
+      labs(
+        title = paste("Premium Distribution - Top", input$top_n, "Insurers"),
+        x = "Insurer Rank (by Premium)",
+        y = "Premium Written ($M)"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 12))
+
+    ggplotly(p)
+  })
+
+  # Insurers table
+  output$insurers_table <- renderDT({
+    current_calculation()$data %>%
+      mutate(
+        rank = row_number(),
+        premium_written = round(premium_written, 2),
+        lcm = round(lcm, 3),
+        weight = premium_written / sum(premium_written),
+        weighted_contribution = lcm * weight
+      ) %>%
+      select(
+        Rank = rank,
+        Insurer = insurer,
+        `Premium ($M)` = premium_written,
+        LCM = lcm,
+        `Weight (%)` = weight,
+        `Weighted Contrib` = weighted_contribution
+      ) %>%
+      datatable(
+        options = list(
+          pageLength = 15,
+          scrollY = "400px",
+          scrollCollapse = TRUE
+        )
+      ) %>%
+      formatPercentage("Weight (%)", digits = 1) %>%
+      formatRound(c("Weighted Contrib"), digits = 4)
   })
 }
 
-# Run the application 
 shinyApp(ui = ui, server = server)
